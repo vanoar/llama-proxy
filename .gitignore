@@ -1,0 +1,8 @@
+# build artifacts
+*.exe
+dist/
+llama.cpp/
+
+# local temp
+*.log
+tmp/

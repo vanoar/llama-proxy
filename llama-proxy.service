@@ -1,0 +1,30 @@
+[Unit]
+Description=llama.cpp model proxy (config-driven, llama-proxy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ВАЖНО: замени youruser / /home/youruser на свои
+User=youruser
+# ВАЖНО: пути к бинарнику, конфигу и llama.cpp — поправить под своё
+WorkingDirectory=/home/youruser
+# HOME нужен, чтобы кэш HF-моделей (~/.cache/huggingface) был тем же, что и при ручном запуске
+Environment=HOME=/home/youruser
+ExecStart=/home/youruser/llama-proxy/llama-proxy -config /home/youruser/llama-proxy/config.json
+# Перечитать конфиг (модели, их env/args, aliases, backend_addr,
+# llama_bin, cwd, load_timeout, default_model) без перезапуска:
+ExecReload=/bin/kill -HUP $MAINPID
+# Изменённые параметры применяются с момента reload; модель, уже стоящая
+# в памяти, переподнимется с новыми параметрами при следующем запросе к ней.
+# Требует перезапуска только listen_addr.
+
+Restart=on-failure
+RestartSec=3
+# SIGTERM -> прокси перешлёт его llama-server и аккуратно выключится
+KillSignal=SIGTERM
+TimeoutStopSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
