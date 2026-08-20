@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -50,13 +52,21 @@ type Config struct {
 	LlamaBin     string      `json:"llama_bin"`
 	Cwd          string      `json:"cwd"`
 	LoadTimeout  string      `json:"load_timeout"`
-	DefaultModel string      `json:"default_model"` // опционально: загрузить при старте
+	DefaultModel string      `json:"default_model"` // модель для старта: не задано -> первая в списке, "none" -> не грузить
 	Models       []*ModelDef `json:"models"`
 
 	// resolved
 	table map[string]*ModelDef
 	order []*ModelDef
 	loadT time.Duration
+}
+
+// newClosedChan создаёт закрытый канал: начальное значение server.idle
+// («in-flight запросов нет»).
+func newClosedChan() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -119,12 +129,27 @@ func (c *Config) buildTable() error {
 		}
 		c.order = append(c.order, m)
 	}
-	if c.DefaultModel != "" {
-		if _, ok := c.table[strings.ToLower(c.DefaultModel)]; !ok {
+	d := strings.TrimSpace(c.DefaultModel)
+	if d != "" && !strings.EqualFold(d, "none") {
+		if _, ok := c.table[strings.ToLower(d)]; !ok {
 			return fmt.Errorf("config: default_model %q not found", c.DefaultModel)
 		}
 	}
 	return nil
+}
+
+// startupModel возвращает модель, которую прокси грузит при старте:
+// default_model, если задан; иначе первая модель из списка;
+// "none" (регистр не важен) — автозагрузки нет вообще.
+func (c *Config) startupModel() *ModelDef {
+	d := strings.TrimSpace(c.DefaultModel)
+	if strings.EqualFold(d, "none") {
+		return nil
+	}
+	if d != "" {
+		return c.resolve(d)
+	}
+	return c.order[0]
 }
 
 func (c *Config) resolve(name string) *ModelDef {
@@ -184,6 +209,12 @@ type server struct {
 	loadedDef *ModelDef // конфиг-модель, по которой поднят бэкенд
 	backendID string    // id модели, который сообщает сам бэкенд
 	run       *running
+
+	// inflight = сколько запросов прямо сейчас прокидывается бэкенду
+	// (идущие генерации/стримы, прокси сам эти коннекты держит и знает,
+	// когда они закончились). idle замыкается, когда inflight становится 0.
+	inflight int
+	idle     chan struct{}
 }
 
 var (
@@ -335,31 +366,141 @@ func (s *server) waitReady() (string, error) {
 	return "", fmt.Errorf("timed out after %s waiting for backend to become ready", c.loadT)
 }
 
-// ensureModel блокирует до тех пор, пока не загрузится модель m, и
-// возвращает id модели, который сообщает бэкенд.
-func (s *server) ensureModel(m *ModelDef) (string, error) {
+// loadedIs возвращает реальный id модели и загрузлена ли модель m
+// (сравнение по указателю: после SIGHUP модель с изменёнными
+// параметрами получит новый указатель и будет переподнята).
+func (s *server) loadedIs(m *ModelDef) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == m.Name && s.loadedDef == m {
+		return s.backendID, true
+	}
+	return "", false
+}
+
+// doEnsureModel блокирует до тех пор, пока не загрузится модель m, и
+// возвращает id модели, который сообщает бэкенд. Свитч не прерывает
+// идущие запросы: сначала дожидаются завершения всех in-flight
+// запросов к текущему бэкенду (мягкая остановка), остальные запросы
+// к другой модели копятся в очереди (switchMu) до готового свитча.
+// Если клиент отвалился во время ожидания (ctx canceled), запрос
+// отбрасывается БЕЗ переключения модели — иначе мёртвые запросы
+// гоняли бы модели туда-сюда по кругу вместе с ретраями.
+//
+// CRITICAL: при count=true запрос учитывается в in-flight счётчике,
+// ПОКА ещё не отпущен switchMu. Если посчитать позже,
+// следующий запрос из очереди увидит нулевой счётчик и отрежет
+// только что поднятую модель, пока этот запрос ещё не начал
+// стримиться (микросекундная щель, а клиент получает 502 + ретраи
+// и вечный пинг-понг моделей).
+func (s *server) doEnsureModel(m *ModelDef, ctx context.Context, count bool) (string, error) {
 	s.switchMu.Lock()
 	defer s.switchMu.Unlock()
 
-	s.mu.Lock()
-	// Сравнение по указателю: после SIGHUP модель с изменёнными
-	// параметрами получит новый указатель и будет переподнята.
-	if s.current == m.Name && s.loadedDef == m {
-		id := s.backendID
-		s.mu.Unlock()
-		log.Printf("model %s already loaded, reuse", m.Name)
-		return id, nil
-	}
-	old := s.current
-	s.mu.Unlock()
+	// Мягкая остановка: не прерываем идущую генерацию — ждём, пока
+	// закончатся все активные запросы к текущей модели.
+	id, ok := s.loadedIs(m)
+	if !ok {
+		if err := s.waitIdle(ctx); err != nil {
+			log.Printf("request for model %s canceled while waiting for in-flight to drain; skipping switch", m.Name)
+			return "", err
+		}
+		// Пока ждали, модель могла стать запрошенной (запрос, стоявший
+		// раньше в очереди, уже сделал свитч).
+		id, ok = s.loadedIs(m)
+		if !ok {
+			// Клиент ушёл, пока запрос стоял в очереди — модель под
+			// него поднимать бессмысленно.
+			if err := ctx.Err(); err != nil {
+				log.Printf("request for model %s canceled while queued; skipping switch", m.Name)
+				return "", err
+			}
+			s.mu.Lock()
+			old := s.current
+			s.mu.Unlock()
 
-	log.Printf("switching model: %s -> %s", old, m.Name)
-	s.stopCurrent()
-	id, err := s.startAndWait(m)
-	if err != nil {
-		return "", err
+			log.Printf("switching model: %s -> %s", old, m.Name)
+			s.stopCurrent()
+			var err error
+			id, err = s.startAndWait(m)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	if ok {
+		log.Printf("model %s already loaded, reuse", m.Name)
+	}
+
+	if count {
+		// Клиент мог уйти прямо перед стартом стрима — тогда и
+		// считать незачем (иначе в счётчике останется "призрак",
+		// который заблокирует следующие свитчи навсегда).
+		if err := ctx.Err(); err != nil {
+			log.Printf("request for model %s canceled; skipping generate", m.Name)
+			return "", err
+		}
+		s.countInflight()
 	}
 	return id, nil
+}
+
+// ensureModel — doEnsureModel для обычного запроса: модель готова
+// И запрос уже учтён в in-flight (свитч больше не дотянется до него).
+func (s *server) ensureModel(m *ModelDef, ctx context.Context) (string, error) {
+	return s.doEnsureModel(m, ctx, true)
+}
+
+// countInflight/uncountInflight ведут счётчик запросов, которые прямо
+// сейчас прокидываются бэкенду (генерация/стрим в работе).
+func (s *server) countInflight() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inflight == 0 {
+		s.idle = make(chan struct{})
+	}
+	s.inflight++
+}
+
+func (s *server) uncountInflight() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflight--
+	if s.inflight == 0 {
+		close(s.idle)
+	}
+}
+
+// waitIdle ждёт, пока не завершатся все in-flight запросы к бэкенду
+// (свитч модели не должен обрывать стримы). Если запрос, который
+// ждёт очереди, отозвали (клиент отвалился) — возвращает ctx-ошибку.
+// Каскадные пробуждения (новый in-flight сразу после дрена)
+// обрабатываются повторной проверкой.
+func (s *server) waitIdle(ctx context.Context) error {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	lastN := -1
+	for {
+		s.mu.Lock()
+		if s.inflight == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		n := s.inflight
+		ch := s.idle
+		s.mu.Unlock()
+		if n != lastN {
+			log.Printf("model switch deferred: %d in-flight request(s), waiting for them to finish", n)
+			lastN = n
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+		case <-ticker.C:
+			log.Printf("still waiting for in-flight requests to finish")
+		}
+	}
 }
 
 // startAndWait поднимает бэкенд для модели и ждёт готовности (вызывать со
@@ -532,13 +673,23 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	counted := false
 	switch {
 	case m != nil:
-		id, err := s.ensureModel(m)
+		// ensureModel учёл запрос в in-flight ещё до освобождения
+		// lock на свитч — следующий свитч не порежет модель у него
+		// из-под носа.
+		id, err := s.ensureModel(m, r.Context())
 		if err != nil {
+			// Клиент отвалился, пока запрос стоял в очереди:
+			// отвечать неоткуда и некому.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
 			aiError(w, http.StatusServiceUnavailable, "model switch failed: "+err.Error())
 			return
 		}
+		counted = true
 		if id != "" {
 			body = rewriteModelField(body, id)
 		}
@@ -553,6 +704,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			aiError(w, http.StatusServiceUnavailable, "no model loaded, specify \"model\" in the request (available: "+c.knownNames()+")")
 			return
 		}
+		s.countInflight()
+		counted = true
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -564,6 +717,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fwdModel := s.current
 	s.mu.Unlock()
 	log.Printf("%s %s -> backend (model=%s)", r.Method, r.URL.RequestURI(), fwdModel)
+	if counted {
+		defer s.uncountInflight()
+	}
 	s.proxy.ServeHTTP(w, r)
 }
 
@@ -623,6 +779,11 @@ func printResolved(c *Config) {
 		fmt.Printf("  env : %v\n", m.Env)
 		fmt.Printf("  args: %s\n", strings.Join(m.Args, " "))
 	}
+	if dm := c.startupModel(); dm != nil {
+		fmt.Printf("startup model: %s\n", dm.Name)
+	} else {
+		fmt.Println("startup model: none (auto-load disabled)")
+	}
 }
 
 func main() {
@@ -642,12 +803,15 @@ func main() {
 		return
 	}
 
-	s := &server{cfg: c, startTime: time.Now()}
+	s := &server{cfg: c, startTime: time.Now(), idle: newClosedChan()}
 	s.proxy = newProxy(s)
 	s.adoptExisting()
-	if c.DefaultModel != "" {
-		if _, err := s.ensureModel(c.resolve(c.DefaultModel)); err != nil {
-			log.Printf("initial load of default model %s failed: %v (next request will retry)", c.DefaultModel, err)
+	if dm := c.startupModel(); dm != nil {
+		// count=false: стартап-загрузка не связана с реальным
+		// запросом, а "призрачный" in-flight навсегда заблокировал
+		// бы первый свитч.
+		if _, err := s.doEnsureModel(dm, context.Background(), false); err != nil {
+			log.Printf("initial load of default model %s failed: %v (next request will retry)", dm.Name, err)
 		}
 	}
 

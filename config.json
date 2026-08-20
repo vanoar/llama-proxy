@@ -13,7 +13,7 @@
         "GGML_OP_OFFLOAD_MIN_BATCH": "2048"
       },
       "args": [
-        "-hf", "unsloth/Muse-Glimmer-30B-GGUF:UD-Q6_K_XL",
+        "-hf", "unsloth/Muse-Glimmer-30B-GGUF:UD-Q8_K_XL",
         "-c", "500000",
         "-n", "32000",
         "--temp", "1.0",
@@ -34,7 +34,7 @@
         "GGML_OP_OFFLOAD_MIN_BATCH": "2048"
       },
       "args": [
-        "-hf", "unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL",
+        "-hf", "unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_L",
         "-c", "262144",
         "-n", "32000",
         "--temp", "1.0",
