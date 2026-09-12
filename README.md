@@ -74,7 +74,27 @@
         "--temp", "1.0", "--top-p", "0.95", "--top-k", "20", "--min-p", "0.0",
         "-ctk", "q8_0", "-ctv", "q8_0",
         "--host", "0.0.0.0", "--metrics",
-        "--spec-type", "draft-mtp", "--spec-draft-n-max", "4"
+        "--spec-type", "draft-mtp", "--spec-draft-n-max", "4",
+        "--chat-template-kwargs", "{\"preserve_thinking\":true}"
+      ]
+    },
+    {
+      "name": "Qwen3.8-Flash-Next",
+      "aliases": ["Qwen3.8-Flash-Next", "qwen-flash", "flash"],
+      "bin": "./llama.cpp/build-mmq/bin/llama-server",  // свой бинарник (опционально), иначе глобальный llama_bin
+      "env": {
+        "LLAMA_QSA_NATIVE": "1",
+        "MTMD_BACKEND_DEVICE": "none",
+        "GGML_OP_OFFLOAD_MIN_BATCH": "1024"
+      },
+      "args": [
+        "-hf", "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
+        "-c", "262144", "-n", "32000",
+        "--temp", "1.0", "--top-p", "0.95", "--top-k", "20", "--min-p", "0.0",
+        "-ctk", "q8_0", "-ctv", "q8_0",
+        "--host", "0.0.0.0", "--metrics",
+        "-b", "8192", "-ub", "1024", "--cache-reuse", "256",
+        "--chat-template-kwargs", "{\"preserve_thinking\":true}"
       ]
     }
   ]
@@ -85,7 +105,11 @@
 
 - `args` — это ровно argv llama-server (массив строк, без шелла). Прокси
   **добавляет** `--port <backend_addr>` и отбрасывает случайный `--port` из конфига.
-- Все поля верхнего уровня и `env`/`aliases` необязательные (пустые `env`/`aliases`
+- `bin` (в модели, опционально) — путь к бинарнику **конкретно этой модели**;
+  переопределяет глобальный `llama_bin`. Для моделей без `bin` используется
+  `llama_bin`. Полезно, когда модель нужна из отдельной сборки (например
+  `build-mmq` для QSA-моделей, остальные — из `build`).
+- Все поля верхнего уровня и `env`/`aliases`/`bin` необязательные (пустые `env`/`aliases`
   = нет). `aliases` можно не писать — тогда работает `name`.
 - Алиасы не должны повторяться между моделями (с учётом регистра) — конфиг
   отклонится с ошибкой, что видно и по `-check`, и в логах.

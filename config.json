@@ -27,7 +27,7 @@
     },
     {
       "name": "Qwen3.8-27b",
-      "aliases": ["Qwen3.8-27b", "qwen"],
+      "aliases": ["Qwen3.8-27b"],
       "env": {
         "GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1",
         "MTMD_BACKEND_DEVICE": "none",
@@ -46,7 +46,35 @@
         "--host", "0.0.0.0",
         "--metrics",
         "--spec-type", "draft-mtp",
-        "--spec-draft-n-max", "4"
+        "--spec-draft-n-max", "4",
+        "--chat-template-kwargs", "{\"preserve_thinking\":true}"
+      ]
+    },
+    {
+      "name": "Qwen3.8-Flash-Next",
+      "aliases": ["Qwen3.8-Flash-Next"],
+      "bin": "./llama.cpp/build-mmq/bin/llama-server",
+      "env": {
+        "LLAMA_QSA_NATIVE": "1",
+        "MTMD_BACKEND_DEVICE": "none",
+        "GGML_OP_OFFLOAD_MIN_BATCH": "1024"
+      },
+      "args": [
+        "-hf", "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
+        "-c", "262144",
+        "-n", "32000",
+        "--temp", "1.0",
+        "--top-p", "0.95",
+        "--top-k", "20",
+        "--min-p", "0.0",
+        "-ctk", "q8_0",
+        "-ctv", "q8_0",
+        "--host", "0.0.0.0",
+        "--metrics",
+        "-b", "8192",
+        "-ub", "1024",
+        "--cache-reuse", "256",
+        "--chat-template-kwargs", "{\"preserve_thinking\":true}"
       ]
     }
   ]

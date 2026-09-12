@@ -33,6 +33,15 @@ type ModelDef struct {
 	Aliases []string          `json:"aliases"`
 	Env     map[string]string `json:"env"`
 	Args    []string          `json:"args"`
+	Bin     string            `json:"bin"` // опц.: бинарник этой модели (переопределяет глобальный llama_bin)
+}
+
+// bin возвращает бинарник модели: свой, если задан, иначе глобальный llama_bin.
+func (m *ModelDef) bin(c *Config) string {
+	if b := strings.TrimSpace(m.Bin); b != "" {
+		return b
+	}
+	return c.LlamaBin
 }
 
 func (m *ModelDef) allNames() []string {
@@ -285,7 +294,7 @@ func (s *server) start(m *ModelDef) error {
 
 	args := backendArgs(m, c.backendPort())
 
-	bin, _ := filepath.Abs(c.LlamaBin)
+	bin, _ := filepath.Abs(m.bin(c))
 	cwd, _ := filepath.Abs(c.Cwd)
 
 	log.Printf("starting %s: %s %s (cwd=%s)", m.Name, bin, strings.Join(args, " "), cwd)
@@ -776,6 +785,7 @@ func (s *server) adoptExisting() {
 func printResolved(c *Config) {
 	for _, m := range c.order {
 		fmt.Printf("model %q (aliases: %s)\n", m.Name, strings.Join(m.allNames(), ", "))
+		fmt.Printf("  bin : %s\n", m.bin(c))
 		fmt.Printf("  env : %v\n", m.Env)
 		fmt.Printf("  args: %s\n", strings.Join(m.Args, " "))
 	}

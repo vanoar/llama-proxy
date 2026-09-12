@@ -210,6 +210,27 @@ func TestBackendArgs(t *testing.T) {
 	}
 }
 
+// bin модели опциональный: не задан -> глобальный llama_bin,
+// задан -> свой (например, отдельная сборка llama.cpp).
+func TestModelBinOverride(t *testing.T) {
+	c, err := loadConfig(writeTmpConfig(t, `{
+	  "llama_bin": "/x/llama-server",
+	  "models": [
+	    {"name": "a", "args": []},
+	    {"name": "b", "bin": "/x/llama-server-mmq", "args": []}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got := c.resolve("a").bin(c); got != "/x/llama-server" {
+		t.Fatalf("bin for model without bin = %q, want global /x/llama-server", got)
+	}
+	if got := c.resolve("b").bin(c); got != "/x/llama-server-mmq" {
+		t.Fatalf("bin for model with bin = %q, want /x/llama-server-mmq", got)
+	}
+}
+
 // Свитч не должен прерывать идущую генерацию: пока в бэкенде висит
 // запрос к текущей модели, запрос к другой модели ждёт его завершения,
 // а бэкенд при этом не убивается.
