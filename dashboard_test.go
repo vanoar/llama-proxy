@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +227,45 @@ func TestPlausibleTemp(t *testing.T) {
 		if got := plausibleTemp(c.kind, c.v); got != c.ok {
 			t.Errorf("plausibleTemp(%s, %v) = %v", c.kind, c.v, got)
 		}
+	}
+}
+
+func TestEstimatePower(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	gpus := []gpuStats{{Power: f(250)}, {Power: f(100)}, {Power: nil}}
+	base := 40.0
+	c := &Config{PowerBaseWatts: &base, PSUEfficiency: 0.9}
+	p := estimatePower(c, gpus, f(80), f(10), 135, true, f(50))
+	// DC = 350 + 80 + 10 + 40 = 480; от розетки = 480/0.9 = 533.3
+	if p.CPUSource != "rapl" || *p.GPUW != 350 || p.DCW != 480 || p.TotalW != 533.3 || p.LossW != 53.3 {
+		t.Fatalf("rapl: %+v", p)
+	}
+	// без прав на RAPL — CPU по загрузке: 135 * (0.2 + 0.8*0.5) = 81
+	p = estimatePower(&Config{}, gpus, nil, nil, 135, false, f(50))
+	if p.CPUSource != "load" || *p.CPUW != 81 || p.BaseW != defaultPowerBase || p.PSUEff != defaultPSUEff || p.Note == "" {
+		t.Fatalf("load: %+v", p)
+	}
+	if estimatePower(&Config{}, nil, nil, nil, 0, false, nil) != nil {
+		t.Fatal("expected nil without any source")
+	}
+}
+
+func TestRAPLWrap(t *testing.T) {
+	dir := t.TempDir()
+	file := dir + "/energy_uj"
+	write := func(v string) {
+		if err := os.WriteFile(file, []byte(v+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	z := &raplZone{path: file, name: "package-0", max: 1_000_000_000}
+	r := &raplReader{scanned: time.Now(), zones: []*raplZone{z}}
+	write("999000000")
+	r.read()
+	z.prevAt = z.prevAt.Add(-time.Second) // как будто прошла секунда
+	write("99000000")                     // переполнение: +1 Дж до max, +99 Дж после
+	cpu, _, _, ok := r.read()
+	if !ok || cpu == nil || *cpu < 99 || *cpu > 101 {
+		t.Fatalf("cpu = %v ok=%v", cpu, ok)
 	}
 }

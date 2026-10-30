@@ -56,15 +56,18 @@ func (m *ModelDef) allNames() []string {
 }
 
 type Config struct {
-	ListenAddr   string      `json:"listen_addr"`
-	BackendAddr  string      `json:"backend_addr"`
-	LlamaBin     string      `json:"llama_bin"`
-	Cwd          string      `json:"cwd"`
-	LoadTimeout  string      `json:"load_timeout"`
-	DefaultModel string      `json:"default_model"` // модель для старта: не задано -> первая в списке, "none" -> не грузить
-	NvidiaSmi    string      `json:"nvidia_smi"`    // дашборд: путь к nvidia-smi ("" -> из PATH, "none" -> не опрашивать GPU)
-	BackendUI    string      `json:"backend_ui"`    // дашборд: ссылка на web-UI llama-server ("" -> http://<хост>:<порт backend_addr>/)
-	Models       []*ModelDef `json:"models"`
+	ListenAddr   string `json:"listen_addr"`
+	BackendAddr  string `json:"backend_addr"`
+	LlamaBin     string `json:"llama_bin"`
+	Cwd          string `json:"cwd"`
+	LoadTimeout  string `json:"load_timeout"`
+	DefaultModel string `json:"default_model"` // модель для старта: не задано -> первая в списке, "none" -> не грузить
+	NvidiaSmi    string `json:"nvidia_smi"`    // дашборд: путь к nvidia-smi ("" -> из PATH, "none" -> не опрашивать GPU)
+	BackendUI    string `json:"backend_ui"`    // дашборд: ссылка на web-UI llama-server ("" -> http://<хост>:<порт backend_addr>/)
+	// дашборд: оценка мощности от розетки = (GPU + CPU + DRAM + power_base_watts) / psu_efficiency
+	PowerBaseWatts *float64    `json:"power_base_watts"` // плата, диски, вентиляторы и т.п. (по умолчанию 50)
+	PSUEfficiency  float64     `json:"psu_efficiency"`   // КПД блока питания, 0..1 (по умолчанию 0.9)
+	Models         []*ModelDef `json:"models"`
 
 	// resolved
 	table map[string]*ModelDef

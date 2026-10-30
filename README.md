@@ -29,6 +29,7 @@
 | `main.go` | прокси: конфиг, свитч моделей, проксирование |
 | `dashboard.go`, `dashboard.html` | дашборд на `/` и его API `/_admin/api/*` (страница встроена в бинарь) |
 | `monitor.go` | сбор метрик для дашборда: CPU/RAM/температуры/GPU/llama-server |
+| `power.go` | оценка энергопотребления сервера (GPU + RAPL + константа + КПД БП) |
 | `logtail.go` | хвост лога llama-server и журнал запросов для дашборда |
 | `config.json` | конфиг: пути, таймаут и список моделей |
 | `dist/llama-proxy` | собранный бинарь под **linux/amd64** (static) |
@@ -52,6 +53,8 @@
    "default_model": "Qwen3.8-27b",       // модель для старта; не задан -> первая в списке; "none" -> не грузить
   "nvidia_smi":   "",                   // дашборд: путь к nvidia-smi; "" -> из PATH; "none" -> не опрашивать GPU
   "backend_ui":   "",                   // дашборд: ссылка на web-UI llama-server; "" -> http://<хост из адреса страницы>:<порт backend_addr>/
+  "power_base_watts": 50,               // дашборд: всё, кроме GPU/CPU/DRAM (плата, диски, вентиляторы), Вт; по умолчанию 50
+  "psu_efficiency":   0.9,              // дашборд: КПД блока питания для оценки «от розетки»; по умолчанию 0.9
   "models": [
     {
       "name": "Muse-Glimmer-30B",       // каноническое имя (его отдаёт /v1/models и /_admin/status)
@@ -203,7 +206,28 @@ POST-эндпоинты `/_admin/api/*` принимают только `Content
   очереди, длительность, объём ответа.
 - **Лог llama-server** — хвост лога (в т.ч. прогресс скачивания `-hf`),
   опрашивается только пока блок раскрыт.
+- **Энергопотребление** — оценка мощности от розетки и разбивка: GPU (точно,
+  `nvidia-smi`), CPU (точно через Intel RAPL, если есть права, иначе — по
+  загрузке от TDP), остальное (`power_base_watts`) и потери БП
+  (`psu_efficiency`). Аппаратного счётчика «от розетки» на обычной плате нет
+  (нет BMC/IPMI), поэтому это именно оценка; константу стоит один раз
+  откалибровать по ваттметру/умной розетке.
 - Кнопка **«Web UI llama-server ↗»** — ссылка на встроенный UI бэкенда (порт 8081).
+
+**Права на RAPL (мощность CPU).** С 2020 года ядро отдаёт
+`/sys/class/powercap/intel-rapl:*/energy_uj` только root (защита от
+side-channel атаки Platypus). Чтобы прокси (работает от своего пользователя)
+мог читать счётчик, юниту можно добавить drop-in, который при каждом старте
+открывает чтение только группе этого пользователя:
+
+```bash
+sudo mkdir -p /etc/systemd/system/llama_proxy.service.d
+printf '[Service]\nExecStartPre=+/bin/sh -c "chgrp vanish /sys/class/powercap/intel-rapl:*/energy_uj && chmod g+r /sys/class/powercap/intel-rapl:*/energy_uj || true"\n' | sudo tee /etc/systemd/system/llama_proxy.service.d/rapl.conf
+sudo systemctl daemon-reload
+```
+
+(`+` — эта команда выполняется от root, сам прокси — нет; `vanish` замени на
+пользователя из `User=`.) Без этого CPU оценивается по загрузке.
 
 **Нагрузка.** Пока страницу никто не смотрит, дашборд не делает ничего.
 Метрики снимаются только по запросу открытой вкладки и не чаще раза в ~1 с

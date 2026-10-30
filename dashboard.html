@@ -22,6 +22,9 @@
   --serious: #ec835a;
   --critical: #d03b3b;
   --link: #1c5cab;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -36,6 +39,9 @@
     --text-muted: #8c8b84;
     --series-1: #3987e5;
     --link: #86b6ef;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
   }
 }
 * { box-sizing: border-box; }
@@ -133,6 +139,13 @@ td.num, th.num { text-align: right; }
   display: none;
 }
 .temps { display: grid; gap: 10px; }
+.stack { display: flex; gap: 2px; height: 14px; margin: 12px 0 8px; }
+.stack > div { height: 100%; min-width: 2px; }
+.stack > div:first-child { border-radius: 4px 0 0 4px; }
+.stack > div:last-child { border-radius: 0 4px 4px 0; }
+.legend { display: grid; grid-template-columns: auto 1fr auto; gap: 3px 8px; font-size: 13px; align-items: center; }
+.legend .sw { width: 10px; height: 10px; border-radius: 2px; }
+.legend .v { text-align: right; }
 .chip-name { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
 .sensors { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .sensors span b { font-weight: 600; }
@@ -201,6 +214,16 @@ pre.log {
   <div class="gpus" id="gpus"></div>
 
   <div class="row">
+    <section class="card" id="power-card">
+      <h2>Энергопотребление <span class="right">оценка</span></h2>
+      <div class="hero" id="pwr-total">—<span class="unit">Вт</span></div>
+      <div class="small sec" id="pwr-sub">от розетки</div>
+      <div class="spark-wrap"><svg class="spark" id="spark-pwr" preserveAspectRatio="none"></svg><div class="tip"></div></div>
+      <div class="stack" id="pwr-stack" role="img"></div>
+      <div class="legend" id="pwr-legend"></div>
+      <div class="small muted" id="pwr-note" style="margin-top:8px"></div>
+    </section>
+
     <section class="card">
       <h2>Процессор <span class="right" id="cpu-model"></span></h2>
       <div style="display:flex; align-items:baseline; gap:16px">
@@ -242,7 +265,7 @@ pre.log {
 "use strict";
 const $ = id => document.getElementById(id);
 const HIST = 150;
-const hist = { gen: [], cpu: [], gpu: {} };
+const hist = { gen: [], cpu: [], pwr: [], gpu: {} };
 let last = null, timer = null, failCount = 0;
 
 function el(tag, attrs, ...kids) {
@@ -306,7 +329,8 @@ function spark(svg, data, max, fmt) {
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
   svg._data = data; svg._fmt = fmt;
   if (data.length < 2) { svg.replaceChildren(); return; }
-  const top = Math.max(max || 0, ...data.map(d => d ?? 0), 1);
+  // max задан (проценты) — шкала до него; иначе запас 20% над максимумом
+  const top = max ? Math.max(max, ...data.map(d => d ?? 0)) : Math.max(...data.map(d => d ?? 0), 1) * 1.2;
   // пока точек мало — растягиваем на минимум 30, дальше окно сдвигается
   const step = w / (Math.max(data.length, 30) - 1), x0 = w - (data.length - 1) * step;
   const pts = data.map((v, i) => [x0 + i * step, h - 2 - ((v ?? 0) / top) * (h - 4)]);
@@ -382,6 +406,7 @@ function render(d) {
   renderSpeed(d);
   renderTasks(d);
   renderGPUs(d);
+  renderPower(d);
   renderCPU(d);
   renderMem(d);
   renderTemps(d);
@@ -525,6 +550,36 @@ function renderGPUs(d) {
       el("div", {}, el("span", { class: "sec" }, "Частота SM: "), g.clock_sm !== null ? nf(g.clock_sm) + (g.clock_max ? " / " + nf(g.clock_max) : "") + " МГц" : "—"),
       el("div", {}, el("span", { class: "sec" }, "P-state: "), g.pstate || "—"));
   }
+}
+
+function renderPower(d) {
+  const p = d.power;
+  if (!p) {
+    put("pwr-total", "—", el("span", { class: "unit" }, "Вт"));
+    put("pwr-stack"); put("pwr-legend");
+    $("pwr-note").textContent = "нет данных о мощности GPU/CPU";
+    return;
+  }
+  push(hist.pwr, p.total_w);
+  put("pwr-total", "≈ " + nf(p.total_w), el("span", { class: "unit" }, "Вт"));
+  $("pwr-sub").textContent = `от розетки · ≈ ${nf(p.total_w * 24 / 1000, 1)} кВт·ч в сутки при такой нагрузке`;
+  spark($("spark-pwr"), hist.pwr, 0, v => "≈ " + nf(v) + " Вт");
+  const nGPU = (d.gpus || []).length;
+  const parts = [
+    { name: nGPU > 1 ? `GPU ×${nGPU}` : "GPU", w: p.gpu_w, how: "nvidia-smi", c: "var(--series-1)" },
+    { name: "CPU", w: p.cpu_w, how: p.cpu_source === "rapl" ? "RAPL" : "по загрузке", c: "var(--series-2)" },
+    { name: "Остальное", w: p.base_w + (p.dram_w || 0), how: p.dram_w ? `константа + DRAM ${nf(p.dram_w)} Вт` : "константа", c: "var(--series-3)" },
+    { name: "Потери БП", w: p.loss_w, how: `КПД ${nf(p.psu_eff * 100)} %`, c: "var(--series-4)" },
+  ].filter(x => x.w !== null && x.w !== undefined);
+  const sum = parts.reduce((a, x) => a + x.w, 0) || 1;
+  const stack = $("pwr-stack");
+  stack.setAttribute("aria-label", parts.map(x => `${x.name} ${nf(x.w)} Вт`).join(", "));
+  stack.replaceChildren(...parts.map(x => el("div", { style: `flex:${x.w / sum} 1 0; background:${x.c}`, title: `${x.name}: ${nf(x.w)} Вт (${nf(x.w / sum * 100)} %)` })));
+  put("pwr-legend", parts.flatMap(x => [
+    el("span", { class: "sw", style: "background:" + x.c }),
+    el("span", {}, x.name, el("span", { class: "muted small" }, " · " + x.how)),
+    el("span", { class: "v" }, nf(x.w) + " Вт")]));
+  $("pwr-note").textContent = p.note || "";
 }
 
 function renderCPU(d) {

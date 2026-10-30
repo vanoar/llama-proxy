@@ -58,6 +58,7 @@ type monitor struct {
 	lastAt   time.Time
 	prevCPU  []cpuTimes
 	prevNet  [2]uint64
+	rapl     raplReader
 	prevProc struct {
 		pid   int
 		ticks uint64
@@ -100,6 +101,7 @@ type statsDoc struct {
 	System   sysStats      `json:"system"`
 	GPUs     []gpuStats    `json:"gpus"`
 	GPUNote  string        `json:"gpu_note,omitempty"`
+	Power    *powerStats   `json:"power,omitempty"`
 	Requests reqStats      `json:"requests"`
 }
 
@@ -213,6 +215,7 @@ func (m *monitor) sample() *statsDoc {
 	if cold {
 		m.prevCPU = readCPUTimes()
 		m.prevNet = readNet()
+		m.rapl.prime()
 		if pid := s.backendPID(); pid > 0 {
 			m.prevProc.pid = pid
 			m.prevProc.ticks, _ = readProcTicks(pid)
@@ -286,6 +289,8 @@ func (m *monitor) sample() *statsDoc {
 
 	// --- GPU
 	doc.GPUs, doc.GPUNote = m.gpu.get()
+	cpuW, dramW, tdp, readable := m.rapl.read()
+	doc.Power = estimatePower(c, doc.GPUs, cpuW, dramW, tdp, readable, sys.CPUPct)
 	doc.Requests = s.reqs.snapshot()
 	return doc
 }
