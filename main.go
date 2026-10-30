@@ -62,6 +62,8 @@ type Config struct {
 	Cwd          string      `json:"cwd"`
 	LoadTimeout  string      `json:"load_timeout"`
 	DefaultModel string      `json:"default_model"` // модель для старта: не задано -> первая в списке, "none" -> не грузить
+	NvidiaSmi    string      `json:"nvidia_smi"`    // дашборд: путь к nvidia-smi ("" -> из PATH, "none" -> не опрашивать GPU)
+	BackendUI    string      `json:"backend_ui"`    // дашборд: ссылка на web-UI llama-server ("" -> http://<хост>:<порт backend_addr>/)
 	Models       []*ModelDef `json:"models"`
 
 	// resolved
@@ -224,6 +226,21 @@ type server struct {
 	// когда они закончились). idle замыкается, когда inflight становится 0.
 	inflight int
 	idle     chan struct{}
+
+	// Состояние для дашборда (под mu).
+	phase       string    // "", "draining", "loading", "unloading"
+	phaseTarget string    // модель, на которую идёт свитч
+	phaseSince  time.Time //
+	loadedAt    time.Time // когда текущая модель стала готова
+	lastErr     string
+	lastErrAt   time.Time
+	queued      map[string]int // модель -> запросов, ждущих в прокси (свитч/очередь)
+	forceCh     chan struct{}  // закрытие = перестать ждать in-flight при свитче
+	adminBusy   bool           // идёт свитч/выгрузка, запущенные с дашборда
+
+	mon  *monitor
+	logs *logTail
+	reqs *reqLog
 }
 
 var (
@@ -250,6 +267,7 @@ func (s *server) stopCurrent() {
 	s.current = ""
 	s.loadedDef = nil
 	s.backendID = ""
+	s.loadedAt = time.Time{}
 	s.mu.Unlock()
 
 	if cr == nil {
@@ -303,6 +321,11 @@ func (s *server) start(m *ModelDef) error {
 	rc.Env = env
 	rc.Stdout = os.Stdout
 	rc.Stderr = os.Stderr
+	if s.logs != nil {
+		// Хвост лога + скорость последнего запроса для дашборда.
+		rc.Stdout = io.MultiWriter(os.Stdout, s.logs)
+		rc.Stderr = io.MultiWriter(os.Stderr, s.logs)
+	}
 	if err := rc.Start(); err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
@@ -317,17 +340,20 @@ func (s *server) start(m *ModelDef) error {
 		close(done)
 		s.mu.Lock()
 		isCurrent := s.run != nil && s.run.cmd == rc
+		code := -1
+		if rc.ProcessState != nil {
+			code = rc.ProcessState.ExitCode()
+		}
 		if isCurrent {
 			s.run = nil
 			s.current = ""
 			s.backendID = ""
+			s.loadedAt = time.Time{}
+			s.lastErr = fmt.Sprintf("llama-server (%s) завершился сам: code=%d", m.Name, code)
+			s.lastErrAt = time.Now()
 		}
 		s.mu.Unlock()
 		if isCurrent {
-			code := -1
-			if rc.ProcessState != nil {
-				code = rc.ProcessState.ExitCode()
-			}
 			log.Printf("backend (%s) exited: code=%d err=%v", m.Name, code, waitErr)
 		}
 	}()
@@ -403,6 +429,10 @@ func (s *server) loadedIs(m *ModelDef) (string, bool) {
 // стримиться (микросекундная щель, а клиент получает 502 + ретраи
 // и вечный пинг-понг моделей).
 func (s *server) doEnsureModel(m *ModelDef, ctx context.Context, count bool) (string, error) {
+	if count {
+		s.addQueued(m.Name, 1)
+		defer s.addQueued(m.Name, -1)
+	}
 	s.switchMu.Lock()
 	defer s.switchMu.Unlock()
 
@@ -410,6 +440,8 @@ func (s *server) doEnsureModel(m *ModelDef, ctx context.Context, count bool) (st
 	// закончатся все активные запросы к текущей модели.
 	id, ok := s.loadedIs(m)
 	if !ok {
+		s.setPhase("draining", m.Name)
+		defer s.setPhase("", "")
 		if err := s.waitIdle(ctx); err != nil {
 			log.Printf("request for model %s canceled while waiting for in-flight to drain; skipping switch", m.Name)
 			return "", err
@@ -497,6 +529,10 @@ func (s *server) waitIdle(ctx context.Context) error {
 		}
 		n := s.inflight
 		ch := s.idle
+		if s.forceCh == nil {
+			s.forceCh = make(chan struct{})
+		}
+		fc := s.forceCh
 		s.mu.Unlock()
 		if n != lastN {
 			log.Printf("model switch deferred: %d in-flight request(s), waiting for them to finish", n)
@@ -506,6 +542,9 @@ func (s *server) waitIdle(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ch:
+		case <-fc:
+			log.Printf("forced from dashboard: not waiting for %d in-flight request(s)", n)
+			return nil
 		case <-ticker.C:
 			log.Printf("still waiting for in-flight requests to finish")
 		}
@@ -515,18 +554,24 @@ func (s *server) waitIdle(ctx context.Context) error {
 // startAndWait поднимает бэкенд для модели и ждёт готовности (вызывать со
 // захваченным switchMu, но не mu).
 func (s *server) startAndWait(m *ModelDef) (string, error) {
+	s.setPhase("loading", m.Name)
 	if err := s.start(m); err != nil {
+		s.setError(err.Error())
 		return "", err
 	}
 	id, err := s.waitReady()
 	if err != nil {
 		s.stopCurrent()
-		return "", fmt.Errorf("failed to load %s: %w", m.Name, err)
+		err = fmt.Errorf("failed to load %s: %w", m.Name, err)
+		s.setError(err.Error())
+		return "", err
 	}
 	s.mu.Lock()
 	s.current = m.Name
 	s.loadedDef = m
 	s.backendID = id
+	s.loadedAt = time.Now()
+	s.lastErr = ""
 	s.mu.Unlock()
 	log.Printf("model %s ready (backend id %q)", m.Name, id)
 	return id, nil
@@ -639,7 +684,14 @@ func (s *server) writeStatus(w http.ResponseWriter) {
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := s.cfgSnapshot()
 	switch r.URL.Path {
-	case "/", "/health":
+	case "/":
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			s.serveDashboard(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, "llama-proxy ok\n")
+		return
+	case "/health":
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "llama-proxy ok\n")
 		return
@@ -651,6 +703,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.writeModels(w)
 			return
 		}
+	}
+	if strings.HasPrefix(r.URL.Path, "/_admin/api/") {
+		s.serveAdminAPI(w, r)
+		return
+	}
+
+	// Журнал запросов для дашборда (статус, длительность, ожидание).
+	sw := &statusWriter{ResponseWriter: w}
+	w = sw
+	var entry *reqEntry
+	if logRequest(r) {
+		entry = s.reqs.begin(r.Method, r.URL.Path)
+		defer func() { s.reqs.end(entry, sw.status, sw.n) }()
 	}
 
 	var body []byte
@@ -688,11 +753,15 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// ensureModel учёл запрос в in-flight ещё до освобождения
 		// lock на свитч — следующий свитч не порежет модель у него
 		// из-под носа.
+		s.reqs.update(entry, func(e *reqEntry) { e.Model = m.Name })
+		t0 := time.Now()
 		id, err := s.ensureModel(m, r.Context())
+		s.reqs.update(entry, func(e *reqEntry) { e.WaitMs = time.Since(t0).Milliseconds() })
 		if err != nil {
 			// Клиент отвалился, пока запрос стоял в очереди:
 			// отвечать неоткуда и некому.
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				sw.status = 499
 				return
 			}
 			aiError(w, http.StatusServiceUnavailable, "model switch failed: "+err.Error())
@@ -725,6 +794,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	fwdModel := s.current
 	s.mu.Unlock()
+	s.reqs.update(entry, func(e *reqEntry) { e.Model = fwdModel })
 	log.Printf("%s %s -> backend (model=%s)", r.Method, r.URL.RequestURI(), fwdModel)
 	if counted {
 		defer s.uncountInflight()
@@ -813,7 +883,13 @@ func main() {
 		return
 	}
 
-	s := &server{cfg: c, startTime: time.Now(), idle: newClosedChan()}
+	s := &server{cfg: c, startTime: time.Now(), idle: newClosedChan(), reqs: newReqLog()}
+	s.logs = newLogTail(func() string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.current
+	})
+	s.mon = newMonitor(s)
 	s.proxy = newProxy(s)
 	s.adoptExisting()
 	if dm := c.startupModel(); dm != nil {

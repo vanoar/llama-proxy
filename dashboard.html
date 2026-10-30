@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama-proxy</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: light;
+  --page: #f3f2ef;
+  --surface-1: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #e2e1dc;
+  --track: #e6e5e0;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --series-1: #2a78d6;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --link: #1c5cab;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #232321;
+    --border: #2e2e2b;
+    --track: #2e2e2b;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8c8b84;
+    --series-1: #3987e5;
+    --link: #86b6ef;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--text-primary);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+a { color: var(--link); }
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+  position: sticky; top: 0; z-index: 5;
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .sub { color: var(--text-secondary); font-size: 13px; }
+header .spacer { flex: 1; }
+main { padding: 16px 20px 40px; display: grid; gap: 16px; max-width: 1600px; margin: 0 auto; }
+.row { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.card {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; min-width: 0;
+}
+.card h2 {
+  margin: 0 0 10px; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text-secondary); display: flex; gap: 8px; align-items: center;
+}
+.card h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-muted); }
+.muted { color: var(--text-muted); }
+.sec { color: var(--text-secondary); }
+.small { font-size: 12px; }
+.hero { font-size: 34px; font-weight: 650; line-height: 1.1; }
+.hero .unit { font-size: 15px; font-weight: 500; color: var(--text-secondary); margin-left: 4px; }
+.big { font-size: 20px; font-weight: 600; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+.kv > :nth-child(odd) { color: var(--text-secondary); }
+.kv > :nth-child(even) { text-align: right; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.tile { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+.tile .v { font-size: 22px; font-weight: 650; }
+.tile .l { font-size: 12px; color: var(--text-secondary); }
+.meter { margin: 6px 0 8px; }
+.meter .top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 3px; }
+.meter .top span:first-child { color: var(--text-secondary); }
+.track { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+.fill { height: 100%; background: var(--series-1); border-radius: 4px; transition: width .4s; }
+.btn {
+  font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary);
+}
+.btn:hover:not(:disabled) { border-color: var(--series-1); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+a.btn { text-decoration: none; display: inline-block; }
+a.btn.off { pointer-events: none; opacity: .45; }
+select.btn { padding: 4px 8px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px;
+  background: var(--surface-2); font-size: 13px; border: 1px solid var(--border);
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.good { background: var(--good); } .dot.warning { background: var(--warning); }
+.dot.serious { background: var(--serious); } .dot.critical { background: var(--critical); }
+.dot.idle { background: var(--text-muted); }
+.models { display: grid; gap: 6px; margin-top: 10px; }
+.model {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+}
+.model.cur { border-color: var(--series-1); }
+.model .name { font-weight: 600; overflow-wrap: anywhere; }
+.model .meta { grid-column: 1; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.model .act { grid-row: 1 / span 2; grid-column: 2; }
+.banner {
+  padding: 8px 10px; border-radius: 8px; background: var(--surface-2); margin: 8px 0;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px;
+}
+.banner.err { border-left: 3px solid var(--critical); }
+.banner.busy { border-left: 3px solid var(--series-1); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--text-secondary); font-size: 12px; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; }
+.cores { display: flex; flex-wrap: wrap; gap: 2px; margin: 8px 0; }
+.core { width: 12px; height: 18px; border-radius: 2px; background: var(--track); }
+.gpus { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.gpu-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+.spark { width: 100%; height: 44px; display: block; margin-top: 6px; }
+.spark-wrap { position: relative; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--text-primary); color: var(--surface-1);
+  font-size: 12px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; transform: translate(-50%, -110%);
+  display: none;
+}
+.temps { display: grid; gap: 10px; }
+.chip-name { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
+.sensors { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.sensors span b { font-weight: 600; }
+.state { display: inline-flex; align-items: center; gap: 6px; }
+details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+pre.log {
+  margin: 10px 0 0; max-height: 420px; overflow: auto; background: var(--surface-2); border-radius: 8px;
+  padding: 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.empty { color: var(--text-muted); font-size: 13px; padding: 6px 0; }
+.scroll-x { overflow-x: auto; }
+@media (max-width: 600px) { .tiles { grid-template-columns: repeat(2, 1fr); } main, header { padding-left: 10px; padding-right: 10px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>llama-proxy</h1>
+  <span class="sub" id="host"></span>
+  <span class="pill" id="state"><span class="dot idle"></span><span>загрузка…</span></span>
+  <span class="spacer"></span>
+  <a class="btn off" id="ui-link" target="_blank" rel="noopener">Web UI llama-server ↗</a>
+  <label class="sub">обновление
+    <select class="btn" id="interval">
+      <option value="1000">1 с</option>
+      <option value="2000" selected>2 с</option>
+      <option value="5000">5 с</option>
+      <option value="0">пауза</option>
+    </select>
+  </label>
+</header>
+<main>
+  <div class="row">
+    <section class="card" id="model-card">
+      <h2>Модель <span class="right" id="model-uptime"></span></h2>
+      <div class="big" id="cur-model">—</div>
+      <div class="small muted" id="cur-meta"></div>
+      <div id="phase"></div>
+      <div class="models" id="models"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+        <button class="btn" id="unload">Выгрузить модель</button>
+        <span class="small muted">освободить VRAM; следующий запрос загрузит модель снова</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Скорость <span class="right" id="speed-note"></span></h2>
+      <div class="hero" id="gen-live">—<span class="unit">ток/с</span></div>
+      <div class="small sec">генерация сейчас (все слоты)</div>
+      <div class="spark-wrap"><svg class="spark" id="spark-gen" preserveAspectRatio="none"></svg><div class="tip"></div></div>
+      <div style="height:10px"></div>
+      <div class="kv" id="speed-kv"></div>
+    </section>
+
+    <section class="card">
+      <h2>Задачи <span class="right" id="slots-note"></span></h2>
+      <div class="tiles">
+        <div class="tile"><div class="v" id="t-prompt">—</div><div class="l">обработка промпта</div></div>
+        <div class="tile"><div class="v" id="t-gen">—</div><div class="l">генерация</div></div>
+        <div class="tile"><div class="v" id="t-deferred">—</div><div class="l">очередь llama-server</div></div>
+        <div class="tile"><div class="v" id="t-queued">—</div><div class="l">ждут в прокси</div></div>
+      </div>
+      <div class="scroll-x" id="slots"></div>
+    </section>
+  </div>
+
+  <div class="gpus" id="gpus"></div>
+
+  <div class="row">
+    <section class="card">
+      <h2>Процессор <span class="right" id="cpu-model"></span></h2>
+      <div style="display:flex; align-items:baseline; gap:16px">
+        <div class="hero" id="cpu-pct">—<span class="unit">%</span></div>
+        <div class="sec small" id="cpu-load"></div>
+        <div class="sec small" id="cpu-temp" style="margin-left:auto"></div>
+      </div>
+      <div class="spark-wrap"><svg class="spark" id="spark-cpu" preserveAspectRatio="none"></svg><div class="tip"></div></div>
+      <div class="cores" id="cores"></div>
+      <div class="small muted" id="cores-note"></div>
+    </section>
+
+    <section class="card">
+      <h2>Память и процессы</h2>
+      <div id="mem"></div>
+      <div class="kv" id="procs" style="margin-top:10px"></div>
+    </section>
+
+    <section class="card">
+      <h2>Температуры</h2>
+      <div class="temps" id="temps"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Запросы через прокси <span class="right" id="req-note"></span></h2>
+    <div class="scroll-x" id="requests"></div>
+  </section>
+
+  <section class="card">
+    <details id="log-details">
+      <summary>Лог llama-server</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const HIST = 150;
+const hist = { gen: [], cpu: [], gpu: {} };
+let last = null, timer = null, failCount = 0;
+
+function el(tag, attrs, ...kids) {
+  const e = tag === "svg" ? document.createElementNS("http://www.w3.org/2000/svg", "svg") : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.setAttribute("class", v);
+    else if (k === "style") e.style.cssText = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+function put(id, ...kids) { const n = $(id); n.replaceChildren(...kids.flat().filter(k => k !== null && k !== undefined).map(k => k instanceof Node ? k : String(k))); }
+const nf = (v, d = 0) => v === null || v === undefined || Number.isNaN(v) ? "—" : Number(v).toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: d });
+function gib(b) { return b ? nf(b / 1073741824, 1) + " ГиБ" : "—"; }
+function bytes(b) {
+  if (b === null || b === undefined) return "—";
+  const u = ["Б", "КиБ", "МиБ", "ГиБ"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return nf(b, i ? 1 : 0) + " " + u[i];
+}
+function rate(b) { return b === null || b === undefined ? "—" : bytes(b) + "/с"; }
+function dur(s) {
+  if (s === null || s === undefined) return "—";
+  s = Math.floor(s);
+  if (s < 60) return s + " с";
+  if (s < 3600) return Math.floor(s / 60) + " мин " + (s % 60) + " с";
+  if (s < 86400) return Math.floor(s / 3600) + " ч " + Math.floor(s % 3600 / 60) + " мин";
+  return Math.floor(s / 86400) + " д " + Math.floor(s % 86400 / 3600) + " ч";
+}
+function ms(v) { return v >= 1000 ? nf(v / 1000, 1) + " с" : nf(v) + " мс"; }
+function push(arr, v) { arr.push(v); if (arr.length > HIST) arr.shift(); }
+
+function meter(label, value, pct, extra) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return el("div", { class: "meter" },
+    el("div", { class: "top" }, el("span", {}, label), el("span", {}, value)),
+    el("div", { class: "track", role: "meter", "aria-valuenow": Math.round(p), "aria-valuemin": 0, "aria-valuemax": 100, "aria-label": label },
+      el("div", { class: "fill", style: "width:" + p + "%" })),
+    extra || null);
+}
+
+// Статус температуры: цвет всегда вместе с текстовой меткой.
+function tempStatus(c, max, crit) {
+  const hot = crit || max;
+  if (c === null || c === undefined) return null;
+  if ((hot && c >= hot - 5) || c >= 90) return ["critical", "критично"];
+  if ((hot && c >= hot - 15) || c >= 80) return ["serious", "горячо"];
+  return null;
+}
+function tempNode(c, max, crit) {
+  if (c === null || c === undefined) return "—";
+  const st = tempStatus(c, max, crit);
+  return el("span", { class: "state" }, st ? el("span", { class: "dot " + st[0] }) : null, nf(c) + " °C", st ? el("span", { class: "small sec" }, st[1]) : null);
+}
+
+// Спарклайн: тонкая линия 2px + лёгкая заливка, hover-подсказка со значением.
+function spark(svg, data, max, fmt) {
+  const w = svg.clientWidth || 300, h = svg.clientHeight || 44;
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg._data = data; svg._fmt = fmt;
+  if (data.length < 2) { svg.replaceChildren(); return; }
+  const top = Math.max(max || 0, ...data.map(d => d ?? 0), 1);
+  // пока точек мало — растягиваем на минимум 30, дальше окно сдвигается
+  const step = w / (Math.max(data.length, 30) - 1), x0 = w - (data.length - 1) * step;
+  const pts = data.map((v, i) => [x0 + i * step, h - 2 - ((v ?? 0) / top) * (h - 4)]);
+  const line = pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const ns = "http://www.w3.org/2000/svg";
+  const area = document.createElementNS(ns, "polygon");
+  area.setAttribute("points", `${x0},${h} ${line} ${pts[pts.length - 1][0]},${h}`);
+  area.setAttribute("fill", "var(--series-1)"); area.setAttribute("fill-opacity", "0.12");
+  const pl = document.createElementNS(ns, "polyline");
+  pl.setAttribute("points", line); pl.setAttribute("fill", "none");
+  pl.setAttribute("stroke", "var(--series-1)"); pl.setAttribute("stroke-width", "2");
+  pl.setAttribute("stroke-linejoin", "round"); pl.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.replaceChildren(area, pl);
+  if (!svg._hover) {
+    svg._hover = true;
+    const tip = svg.parentNode.querySelector(".tip");
+    svg.addEventListener("mousemove", ev => {
+      const d = svg._data; if (!d || d.length < 2) return;
+      const r = svg.getBoundingClientRect(), st = r.width / (Math.max(d.length, 30) - 1);
+      const i = Math.round((ev.clientX - r.left - (r.width - (d.length - 1) * st)) / st);
+      if (i < 0 || i >= d.length) { tip.style.display = "none"; return; }
+      const ago = (d.length - 1 - i) * (curInterval() / 1000);
+      tip.textContent = svg._fmt(d[i]) + (ago ? " · " + dur(ago) + " назад" : " · сейчас");
+      tip.style.left = (ev.clientX - r.left) + "px"; tip.style.top = "6px"; tip.style.display = "block";
+    });
+    svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+  }
+}
+
+function backendUIURL(p) {
+  return p.backend_ui || `${location.protocol}//${location.hostname}:${p.backend_port}/`;
+}
+
+async function post(path, body) {
+  const r = await fetch("/_admin/api/" + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  if (!r.ok) {
+    let msg = r.status + "";
+    try { msg = (await r.json()).error.message; } catch (e) {}
+    alert("Ошибка: " + msg);
+  }
+  tick(true);
+}
+
+function switchTo(name) {
+  const p = last?.proxy || {};
+  let msg = `Загрузить «${name}»?\nТекущая модель будет выгружена.`;
+  const active = (p.inflight || 0);
+  if (active) msg += `\n\nСейчас активных запросов: ${active}. Переключение дождётся их завершения.`;
+  if (confirm(msg)) post("switch", { model: name });
+}
+
+// --- рендер -------------------------------------------------------------------
+
+function render(d) {
+  const p = d.proxy, b = d.backend || {}, sys = d.system;
+  last = d;
+  $("host").textContent = (sys.hostname || "") + (sys.uptime ? " · up " + dur(sys.uptime) : "") + " · прокси " + dur(p.up_seconds);
+
+  // статус
+  let st, stText;
+  if (p.phase === "loading") { st = "warning"; stText = "загрузка " + p.phase_target; }
+  else if (p.phase === "draining") { st = "warning"; stText = "ждём запросы → " + p.phase_target; }
+  else if (p.phase === "unloading") { st = "warning"; stText = "выгрузка"; }
+  else if (p.current) { st = "good"; stText = p.current + (b.processing > 0 ? " · работает" : " · готова"); }
+  else { st = "idle"; stText = "модель не загружена"; }
+  put("state", el("span", { class: "dot " + st }), el("span", {}, stText));
+
+  const link = $("ui-link");
+  if (p.current && !p.phase) { link.href = backendUIURL(p); link.classList.remove("off"); }
+  else { link.removeAttribute("href"); link.classList.add("off"); }
+
+  renderModel(d);
+  renderSpeed(d);
+  renderTasks(d);
+  renderGPUs(d);
+  renderCPU(d);
+  renderMem(d);
+  renderTemps(d);
+  renderRequests(d);
+}
+
+function renderModel(d) {
+  const p = d.proxy, b = d.backend || {}, pr = b.props;
+  $("cur-model").textContent = p.current || "не загружена";
+  const meta = [];
+  if (p.current === "external") meta.push("чужой llama-server, прокси не может его остановить");
+  if (p.backend_id && p.backend_id !== p.current) meta.push("id: " + p.backend_id);
+  if (p.pid) meta.push("pid " + p.pid);
+  if (pr) {
+    if (pr.n_ctx) meta.push("контекст " + nf(pr.n_ctx) + (pr.total_slots > 1 ? " × " + pr.total_slots + " слота" : ""));
+    if (pr.build) meta.push("build " + pr.build);
+  }
+  $("cur-meta").textContent = meta.join(" · ");
+  $("model-uptime").textContent = p.loaded_seconds ? "загружена " + dur(p.loaded_seconds) + " назад" : "";
+
+  const ph = [];
+  if (p.phase === "draining") {
+    ph.push(el("div", { class: "banner busy" },
+      el("span", {}, `Переключение на «${p.phase_target}»: ждём завершения активных запросов (${p.inflight}) · ${dur(p.phase_seconds)}`),
+      el("button", { class: "btn", onclick: () => { if (confirm("Не ждать активные запросы? Идущие генерации будут оборваны.")) post("force"); } }, "Не ждать")));
+  } else if (p.phase === "loading") {
+    ph.push(el("div", { class: "banner busy" }, el("span", {}, `Загрузка «${p.phase_target}» · ${dur(p.phase_seconds)}`), el("span", { class: "muted small" }, "прогресс — в логе ниже")));
+  } else if (p.phase === "unloading") {
+    ph.push(el("div", { class: "banner busy" },
+      el("span", {}, `Выгрузка модели: ждём активные запросы (${p.inflight}) · ${dur(p.phase_seconds)}`),
+      el("button", { class: "btn", onclick: () => { if (confirm("Не ждать активные запросы? Идущие генерации будут оборваны.")) post("force"); } }, "Не ждать")));
+  }
+  if (p.last_error) ph.push(el("div", { class: "banner err" }, el("span", { class: "dot critical" }), el("span", {}, "Ошибка " + dur(p.last_error_ago) + " назад: " + p.last_error)));
+  put("phase", ph);
+
+  const busy = !!p.phase || p.admin_busy;
+  put("models", d.models.map(m => {
+    const cur = m.name === p.current;
+    const target = p.phase && m.name === p.phase_target;
+    const meta = [m.source, m.ctx ? "ctx " + nf(+m.ctx) : null, m.aliases.length ? "алиасы: " + m.aliases.join(", ") : null].filter(Boolean).join(" · ");
+    let act;
+    if (cur) act = el("span", { class: "pill" }, el("span", { class: "dot good" }), "загружена");
+    else if (target) act = el("span", { class: "pill" }, el("span", { class: "dot warning" }), p.phase === "loading" ? "загружается" : "в очереди");
+    else act = el("button", { class: "btn", disabled: busy, onclick: () => switchTo(m.name) }, "Загрузить");
+    const q = p.queued_by?.[m.name];
+    return el("div", { class: "model" + (cur ? " cur" : "") },
+      el("div", { class: "name" }, m.name, q ? el("span", { class: "small sec" }, ` · ждут: ${q}`) : null),
+      el("div", { class: "act" }, act),
+      el("div", { class: "meta" }, meta));
+  }));
+  $("unload").disabled = busy || !p.current;
+  $("unload").onclick = () => {
+    let msg = `Выгрузить «${p.current}» и освободить VRAM?`;
+    if (p.inflight) msg += `\nАктивных запросов: ${p.inflight} — выгрузка дождётся их завершения.`;
+    if (confirm(msg)) post("unload");
+  };
+}
+
+function renderSpeed(d) {
+  const b = d.backend || {}, p = d.proxy;
+  const live = b.gen_live_tps;
+  if (p.current && live !== undefined && live !== null) push(hist.gen, live);
+  put("gen-live", live === undefined || live === null ? "—" : nf(live, live < 100 ? 1 : 0), el("span", { class: "unit" }, "ток/с"));
+  spark($("spark-gen"), hist.gen, 0, v => nf(v, 1) + " ток/с");
+
+  const kv = [];
+  const L = p.last;
+  if (L) {
+    kv.push("Последний запрос", (L.model ? L.model + " · " : "") + dur((d.now - L.at) / 1000) + " назад");
+    if (L.prompt_n) kv.push("  промпт", `${nf(L.prompt_n)} ток · ${L.prompt_tps ? nf(L.prompt_tps, 1) + " ток/с" : "—"} · ${ms(L.prompt_ms)}`);
+    kv.push("  генерация", `${nf(L.gen_n)} ток · ${nf(L.gen_tps, 1)} ток/с · ${ms(L.gen_ms)}`);
+    if (L.draft_rate !== undefined && L.draft_rate !== null) kv.push("  принято draft", nf(L.draft_rate * 100, 0) + " %");
+  }
+  if (b.metrics) {
+    kv.push("Среднее с загрузки", "");
+    kv.push("  промпт", b.prompt_avg_tps ? nf(b.prompt_avg_tps, 1) + " ток/с" : "—");
+    kv.push("  генерация", b.gen_avg_tps ? nf(b.gen_avg_tps, 1) + " ток/с" : "—");
+    kv.push("Токенов всего", `${nf(b.prompt_tokens_total)} промпт · ${nf(b.gen_tokens_total)} ген.`);
+  }
+  put("speed-kv", kv.map(t => el("div", {}, t)));
+  $("speed-note").textContent = p.current && d.backend && !b.metrics ? "нет --metrics: средние недоступны" : "";
+  if (!kv.length) put("speed-kv", el("div", { class: "muted" }, "ещё не было запросов"), el("div"));
+}
+
+function renderTasks(d) {
+  const b = d.backend, p = d.proxy;
+  $("t-prompt").textContent = b && b.slots_api ? b.prompting : "—";
+  $("t-gen").textContent = b && b.slots_api ? b.generating : (b && b.metrics ? b.processing : "—");
+  $("t-deferred").textContent = b && b.metrics ? b.deferred : "—";
+  $("t-queued").textContent = p.queued || 0;
+  let note = "";
+  if (b && b.error) note = b.error;
+  else if (b && !b.slots_api && p.current) note = "/slots недоступен";
+  $("slots-note").textContent = note;
+  if (!b || !b.slots || !b.slots.length) { put("slots", el("div", { class: "empty" }, p.current ? "нет данных о слотах" : "модель не загружена")); return; }
+  const stateName = { idle: "свободен", prompt: "промпт", gen: "генерация", busy: "занят" };
+  const stateDot = { idle: "idle", prompt: "warning", gen: "good", busy: "good" };
+  put("slots", el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "слот"), el("th", {}, "состояние"), el("th", { class: "num" }, "сгенерировано"), el("th", { class: "num" }, "ток/с"), el("th", { class: "num" }, "идёт"), el("th", { class: "num" }, "ctx"))),
+    el("tbody", {}, b.slots.map(s => el("tr", {},
+      el("td", {}, "#" + s.id),
+      el("td", {}, el("span", { class: "state" }, el("span", { class: "dot " + stateDot[s.state] }), stateName[s.state] || s.state)),
+      el("td", { class: "num" }, s.state === "idle" ? el("span", { class: "muted" }, nf(s.n_decoded)) : nf(s.n_decoded)),
+      el("td", { class: "num" }, s.tps === null || s.tps === undefined ? "—" : nf(s.tps, 1)),
+      el("td", { class: "num" }, s.state === "idle" ? "—" : dur(s.elapsed)),
+      el("td", { class: "num" }, nf(s.n_ctx)))))));
+}
+
+function renderGPUs(d) {
+  const gpus = d.gpus || [];
+  if (!gpus.length) {
+    put("gpus", el("section", { class: "card" }, el("h2", {}, "GPU"), el("div", { class: "empty" }, d.gpu_note || "нет данных (nvidia-smi запускается…)")));
+    return;
+  }
+  const box = $("gpus");
+  // карточки переиспользуем, чтобы не терять hover на спарклайнах
+  if (box.children.length !== gpus.length || !box.querySelector(".spark")) {
+    box.replaceChildren(...gpus.map(g => el("section", { class: "card", "data-gpu": g.index },
+      el("h2", {}, "GPU " + g.index, el("span", { class: "right g-name" })),
+      el("div", { class: "gpu-head" }, el("div", { class: "hero g-util" }), el("div", { class: "sec small g-state", style: "margin-left:auto" })),
+      el("div", { class: "spark-wrap" }, el("svg", { class: "spark", preserveAspectRatio: "none" }), el("div", { class: "tip" })),
+      el("div", { class: "g-meters" }),
+      el("div", { class: "split small g-kv" }))));
+  }
+  for (const g of gpus) {
+    const c = box.querySelector(`[data-gpu="${g.index}"]`);
+    const h = hist.gpu[g.index] || (hist.gpu[g.index] = []);
+    push(h, g.util);
+    c.querySelector(".g-name").textContent = g.name;
+    c.querySelector(".g-util").replaceChildren(nf(g.util), el("span", { class: "unit" }, "% загрузка"));
+    c.querySelector(".g-state").replaceChildren(tempNode(g.temp));
+    spark(c.querySelector(".spark"), h, 100, v => nf(v) + " %");
+    const memPct = g.mem_total ? g.mem_used / g.mem_total * 100 : 0;
+    const pwrPct = g.power_limit ? g.power / g.power_limit * 100 : 0;
+    c.querySelector(".g-meters").replaceChildren(
+      meter("VRAM", `${nf(g.mem_used / 1024, 1)} / ${nf(g.mem_total / 1024, 1)} ГиБ · ${nf(memPct)} %`, memPct),
+      meter("Питание", g.power !== null ? `${nf(g.power)} / ${nf(g.power_limit)} Вт` : "—", pwrPct));
+    c.querySelector(".g-kv").replaceChildren(
+      el("div", {}, el("span", { class: "sec" }, "Шина памяти: "), g.mem_util !== null ? nf(g.mem_util) + " %" : "—"),
+      el("div", {}, el("span", { class: "sec" }, "Вентилятор: "), g.fan !== null ? nf(g.fan) + " %" : "—"),
+      el("div", {}, el("span", { class: "sec" }, "Частота SM: "), g.clock_sm !== null ? nf(g.clock_sm) + (g.clock_max ? " / " + nf(g.clock_max) : "") + " МГц" : "—"),
+      el("div", {}, el("span", { class: "sec" }, "P-state: "), g.pstate || "—"));
+  }
+}
+
+function renderCPU(d) {
+  const s = d.system;
+  $("cpu-model").textContent = (s.cpu_model || "") + (s.cores ? " · " + s.cores + " потоков" : "");
+  if (s.cpu_pct !== null && s.cpu_pct !== undefined) push(hist.cpu, s.cpu_pct);
+  put("cpu-pct", nf(s.cpu_pct), el("span", { class: "unit" }, "%"));
+  $("cpu-load").textContent = s.load ? "load " + s.load.map(v => nf(v, 2)).join(" · ") : "";
+  const cpuChip = (s.temps || []).find(c => c.kind === "cpu");
+  if (cpuChip) {
+    const main = cpuChip.sensors.find(x => /^(Tctl|Tdie|Package)/i.test(x.label)) || cpuChip.sensors.reduce((a, b) => a.c > b.c ? a : b);
+    put("cpu-temp", tempNode(main.c, main.max, main.crit));
+  } else put("cpu-temp");
+  spark($("spark-cpu"), hist.cpu, 100, v => nf(v) + " %");
+  const pc = s.per_core || [];
+  put("cores", pc.map((v, i) => el("div", { class: "core", title: `CPU ${i}: ${nf(v)} %`, style: `background: color-mix(in srgb, var(--series-1) ${Math.round(8 + v * 0.92)}%, var(--track))` })));
+  $("cores-note").textContent = pc.length ? `по потокам · ярче = выше загрузка · максимум ${nf(Math.max(...pc))} %` : (s.cpu_pct === null || s.cpu_pct === undefined ? "нет /proc/stat (не Linux?)" : "");
+}
+
+function renderMem(d) {
+  const s = d.system, b = d.backend || {};
+  const used = s.mem_total - s.mem_avail;
+  const m = [];
+  if (s.mem_total) m.push(meter("ОЗУ", `${gib(used)} / ${gib(s.mem_total)}`, used / s.mem_total * 100));
+  if (s.swap_total) m.push(meter("Swap", `${gib(s.swap_total - s.swap_free)} / ${gib(s.swap_total)}`, (s.swap_total - s.swap_free) / s.swap_total * 100));
+  if (!m.length) m.push(el("div", { class: "empty" }, "нет /proc/meminfo"));
+  put("mem", m);
+  const kv = [];
+  if (d.proxy.pid) {
+    kv.push("llama-server CPU", b.cpu_pct !== null && b.cpu_pct !== undefined ? nf(b.cpu_pct) + " % ядра" : "—");
+    kv.push("llama-server RSS", b.rss ? bytes(b.rss) : "—");
+  }
+  kv.push("llama-proxy RSS", s.proxy_rss ? bytes(s.proxy_rss) : "—");
+  kv.push("Сеть ↓ / ↑", `${rate(s.net_rx)} / ${rate(s.net_tx)}`);
+  put("procs", kv.map(t => el("div", {}, t)));
+}
+
+function renderTemps(d) {
+  const chips = d.system.temps || [];
+  const out = [];
+  for (const g of d.gpus || []) if (g.temp !== null) out.push(el("div", {}, el("div", { class: "chip-name" }, "GPU " + g.index), el("div", { class: "sensors" }, el("span", {}, tempNode(g.temp)))));
+  const kindName = { cpu: "CPU", nvme: "NVMe", gpu: "GPU" };
+  for (const c of chips) {
+    let sensors = c.sensors;
+    let summary = null;
+    // много ядер (coretemp) — сворачиваем в package + максимум/среднее
+    if (sensors.length > 8) {
+      const pkg = sensors.filter(x => /package|tctl|tdie/i.test(x.label));
+      const rest = sensors.filter(x => !pkg.includes(x));
+      const mx = Math.max(...rest.map(x => x.c)), avg = rest.reduce((a, x) => a + x.c, 0) / rest.length;
+      summary = el("span", { class: "sec" }, `${rest.length} датчиков: макс ${nf(mx)} °C · сред ${nf(avg)} °C`);
+      sensors = pkg;
+    }
+    out.push(el("div", {},
+      el("div", { class: "chip-name" }, (kindName[c.kind] ? kindName[c.kind] + " · " : "") + c.name),
+      el("div", { class: "sensors" }, sensors.map(x => el("span", {}, el("span", { class: "sec" }, x.label + " "), tempNode(x.c, x.max, x.crit))), summary)));
+  }
+  put("temps", out.length ? out : el("div", { class: "empty" }, "датчики не найдены (/sys/class/hwmon)"));
+}
+
+function renderRequests(d) {
+  const r = d.requests || {};
+  $("req-note").textContent = `всего ${nf(r.total || 0)} · ошибок 5xx ${nf(r.errors || 0)}`;
+  const rows = [...(r.active || []).map(x => ({ ...x, active: true })), ...(r.recent || [])].slice(0, 25);
+  if (!rows.length) { put("requests", el("div", { class: "empty" }, "запросов пока не было")); return; }
+  const status = x => {
+    if (x.active) return el("span", { class: "state" }, el("span", { class: "dot good" }), "идёт");
+    if (x.status === 499) return el("span", { class: "muted" }, "клиент ушёл");
+    if (x.status >= 500) return el("span", { class: "state" }, el("span", { class: "dot critical" }), x.status);
+    if (x.status >= 400) return el("span", { class: "state" }, el("span", { class: "dot serious" }), x.status);
+    return x.status || "—";
+  };
+  put("requests", el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "время"), el("th", {}, "запрос"), el("th", {}, "модель"), el("th", {}, "статус"), el("th", { class: "num" }, "ожидание"), el("th", { class: "num" }, "длительность"), el("th", { class: "num" }, "ответ"))),
+    el("tbody", {}, rows.map(x => el("tr", {},
+      el("td", { class: "sec" }, new Date(x.start).toLocaleTimeString("ru-RU")),
+      el("td", {}, x.method + " " + x.path),
+      el("td", {}, x.model || "—"),
+      el("td", {}, status(x)),
+      el("td", { class: "num" }, x.wait_ms > 50 ? ms(x.wait_ms) : "—"),
+      el("td", { class: "num" }, ms(x.dur_ms)),
+      el("td", { class: "num" }, x.active ? "—" : bytes(x.bytes)))))));
+}
+
+// --- лог (опрашивается только когда раскрыт) ------------------------------------
+
+let logSeq = 0, logTimer = null;
+async function pollLog() {
+  clearTimeout(logTimer);
+  if (!$("log-details").open || document.hidden) return;
+  try {
+    const r = await fetch("/_admin/api/logs?after=" + logSeq);
+    const j = await r.json();
+    const pre = $("log");
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    if (j.seq < logSeq) pre.textContent = "";
+    if (j.lines && j.lines.length) {
+      pre.textContent += j.lines.join("\n") + "\n";
+      const lines = pre.textContent.split("\n");
+      if (lines.length > 600) pre.textContent = lines.slice(-500).join("\n");
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+    }
+    if (!pre.textContent) pre.textContent = "(пусто — лог появится после запуска модели прокси)";
+    logSeq = j.seq;
+  } catch (e) {}
+  logTimer = setTimeout(pollLog, 2000);
+}
+$("log-details").addEventListener("toggle", () => { if ($("log-details").open) { logSeq = 0; $("log").textContent = ""; pollLog(); } });
+
+// --- цикл опроса ------------------------------------------------------------------
+
+function curInterval() { return +$("interval").value; }
+let tickGen = 0;
+async function tick(once) {
+  clearTimeout(timer);
+  const my = ++tickGen;
+  if (document.hidden && !once) return; // вкладка скрыта — сервер не трогаем
+  try {
+    const r = await fetch("/_admin/api/stats", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const doc = await r.json();
+    failCount = 0;
+    render(doc);
+  } catch (e) {
+    console.error(e);
+    failCount++;
+    put("state", el("span", { class: "dot critical" }), el("span", {}, "нет связи с прокси"));
+  }
+  if (my !== tickGen) return; // пока ждали ответ, запустили новый цикл
+  const iv = curInterval();
+  if (iv > 0) timer = setTimeout(tick, failCount ? Math.min(iv * 2 ** failCount, 30000) : iv);
+}
+$("interval").addEventListener("change", () => { localStorage.setItem("lp-interval", $("interval").value); tick(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); pollLog(); } });
+const saved = localStorage.getItem("lp-interval");
+if (saved !== null && [...$("interval").options].some(o => o.value === saved)) $("interval").value = saved;
+tick(true);
+</script>
+</body>
+</html>
