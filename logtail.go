@@ -27,6 +27,7 @@ type reqTimings struct {
 	GenMs     float64  `json:"gen_ms"`
 	GenTPS    float64  `json:"gen_tps"`
 	DraftRate *float64 `json:"draft_rate,omitempty"` // доля принятых draft-токенов (speculative / MTP)
+	CachedN   int      `json:"cached_n,omitempty"`   // токены промпта из кэша (Strata)
 }
 
 type logTail struct {

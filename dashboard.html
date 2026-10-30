@@ -204,7 +204,7 @@ pre.log {
       <div class="tiles">
         <div class="tile"><div class="v" id="t-prompt">—</div><div class="l">обработка промпта</div></div>
         <div class="tile"><div class="v" id="t-gen">—</div><div class="l">генерация</div></div>
-        <div class="tile"><div class="v" id="t-deferred">—</div><div class="l">очередь llama-server</div></div>
+        <div class="tile"><div class="v" id="t-deferred">—</div><div class="l">очередь бэкенда</div></div>
         <div class="tile"><div class="v" id="t-queued">—</div><div class="l">ждут в прокси</div></div>
       </div>
       <div class="scroll-x" id="slots"></div>
@@ -476,7 +476,7 @@ function renderSpeed(d) {
   const L = p.last;
   if (L) {
     kv.push("Последний запрос", (L.model ? L.model + " · " : "") + dur((d.now - L.at) / 1000) + " назад");
-    if (L.prompt_n) kv.push("  промпт", `${nf(L.prompt_n)} ток · ${L.prompt_tps ? nf(L.prompt_tps, 1) + " ток/с" : "—"} · ${ms(L.prompt_ms)}`);
+    if (L.prompt_n || L.cached_n) kv.push("  промпт", `${nf(L.prompt_n)} ток${L.cached_n ? " (+" + nf(L.cached_n) + " из кэша)" : ""} · ${L.prompt_tps ? nf(L.prompt_tps, 1) + " ток/с" : "—"} · ${ms(L.prompt_ms)}`);
     kv.push("  генерация", `${nf(L.gen_n)} ток · ${nf(L.gen_tps, 1)} ток/с · ${ms(L.gen_ms)}`);
     if (L.draft_rate !== undefined && L.draft_rate !== null) kv.push("  принято draft", nf(L.draft_rate * 100, 0) + " %");
   }
@@ -507,8 +507,9 @@ function renderTasks(d) {
   put("slots", el("table", {},
     el("thead", {}, el("tr", {}, el("th", {}, "слот"), el("th", {}, "состояние"), el("th", { class: "num" }, "сгенерировано"), el("th", { class: "num" }, "ток/с"), el("th", { class: "num" }, "идёт"), el("th", { class: "num" }, "ctx"))),
     el("tbody", {}, b.slots.map(s => el("tr", {},
-      el("td", {}, "#" + s.id),
-      el("td", {}, el("span", { class: "state" }, el("span", { class: "dot " + stateDot[s.state] }), stateName[s.state] || s.state)),
+      el("td", {}, s.solo ? el("span", { class: "sec", title: "одиночный запрос Strata выполняет вне батч-слотов" }, "вне слотов") : "#" + s.id),
+      el("td", {}, el("span", { class: "state" }, el("span", { class: "dot " + stateDot[s.state] }), stateName[s.state] || s.state,
+        s.state === "prompt" && s.prompt_total ? el("span", { class: "small sec" }, s.prompt_read ? ` ${nf(s.prompt_read / s.prompt_total * 100)} % из ${nf(s.prompt_total)}` : ` ${nf(s.prompt_total)} ток`) : null)),
       el("td", { class: "num" }, s.state === "idle" ? el("span", { class: "muted" }, nf(s.n_decoded)) : nf(s.n_decoded)),
       el("td", { class: "num" }, s.tps === null || s.tps === undefined ? "—" : nf(s.tps, 1)),
       el("td", { class: "num" }, s.state === "idle" ? "—" : dur(s.elapsed)),

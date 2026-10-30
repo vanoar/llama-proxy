@@ -134,7 +134,8 @@ type proxyStats struct {
 
 type backendStats struct {
 	Error        string        `json:"error,omitempty"`
-	Metrics      bool          `json:"metrics"` // --metrics включён
+	Engine       string        `json:"engine,omitempty"` // "strata" — бэкенд не llama-server
+	Metrics      bool          `json:"metrics"`          // --metrics включён
 	SlotsAPI     bool          `json:"slots_api"`
 	Processing   int           `json:"processing"`
 	Prompting    int           `json:"prompting"`
@@ -149,17 +150,22 @@ type backendStats struct {
 	Props        *backendProps `json:"props,omitempty"`
 	CPUPct       *float64      `json:"cpu_pct"` // % одного ядра
 	RSS          uint64        `json:"rss"`
+	last         *reqTimings   // последний запрос по данным самого бэкенда (Strata)
 }
 
 type slotStats struct {
 	ID       int      `json:"id"`
 	Task     int64    `json:"task"`
 	NCtx     int      `json:"n_ctx"`
-	State    string   `json:"state"` // idle | prompt | gen
+	State    string   `json:"state"` // idle | prompt | gen | busy
 	NDecoded int64    `json:"n_decoded"`
 	NRemain  int64    `json:"n_remain"`
 	TPS      *float64 `json:"tps"`
 	Elapsed  float64  `json:"elapsed"`
+	// Strata: прогресс чтения промпта; Solo — запрос вне батч-слотов.
+	PromptRead  int  `json:"prompt_read,omitempty"`
+	PromptTotal int  `json:"prompt_total,omitempty"`
+	Solo        bool `json:"solo,omitempty"`
 }
 
 type backendProps struct {
@@ -230,6 +236,13 @@ func (m *monitor) sample() *statsDoc {
 	doc := &statsDoc{Now: now.UnixMilli()}
 	doc.Proxy = s.proxySnapshot(c)
 	doc.Proxy.Last = s.logs.lastTimings()
+	defer func() {
+		// Точные тайминги последнего запроса от самого бэкенда (Strata) важнее разбора лога.
+		if doc.Backend != nil && doc.Backend.last != nil {
+			doc.Proxy.Last = doc.Backend.last
+			doc.Proxy.Last.Model = doc.Proxy.Current
+		}
+	}()
 	for _, md := range c.order {
 		doc.Models = append(doc.Models, describeModel(md))
 	}
@@ -330,6 +343,11 @@ func (m *monitor) sampleBackend(c *Config, pid int, now time.Time) *backendStats
 	wg.Wait()
 	b.Props = m.props
 
+	// Strata отдаёт на /metrics JSON (Prometheus — только по Accept: text/plain),
+	// и в нём больше, чем в /slots: одиночный запрос идёт вне слотов.
+	if metricsCode == 200 && looksLikeJSON(metricsBody) && applyStrata(b, metricsBody) {
+		return b
+	}
 	if metricsCode == 200 {
 		b.Metrics = true
 		pm := parseProm(metricsBody)

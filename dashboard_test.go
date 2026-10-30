@@ -269,3 +269,40 @@ func TestRAPLWrap(t *testing.T) {
 		t.Fatalf("cpu = %v ok=%v", cpu, ok)
 	}
 }
+
+// Формат JSON /metrics Strata: одиночный запрос идёт вне батч-слотов.
+const strataMetricsSample = `{"engine": {"version": "0.1.52", "batch_slots": 2},
+ "live": {"state": "generating", "queued": 0, "phase": "answering", "prompt_tokens": 2836, "prompt_read": null, "prompt_total": null,
+  "generated": 1200, "elapsed_s": 16.2, "tok_s": 78.4, "parallel": 2, "running": 1,
+  "slots": [{"slot": 0, "state": "idle", "held_tokens": 0}, {"slot": 1, "state": "reading", "prompt_tokens": 40000, "prompt_read": 10000, "generated": 0, "elapsed_s": 3.0, "tok_s": null}],
+  "outside_slots": 1, "waiting": 2, "admitting": 0},
+ "requests": [{"time": 1793349315.5, "prompt_tokens": 2836, "reused": 2768, "output_tokens": 4640, "prompt_read": 68, "prompt_ms": 762.3, "decode_ms": 59498.3, "decode_tok_s": 78.0, "drafts_offered": 3896, "drafts_accepted": 2284}],
+ "totals": {"prompt_tokens": 5609, "reused": 2768, "output_tokens": 4791, "prompt_ms": 7175.2, "decode_ms": 61933.8}}`
+
+func TestApplyStrata(t *testing.T) {
+	b := &backendStats{Props: &backendProps{NCtx: 262144}}
+	if !applyStrata(b, []byte(strataMetricsSample)) {
+		t.Fatal("not detected as strata")
+	}
+	if b.Engine != "strata" || len(b.Slots) != 3 || b.Generating != 1 || b.Prompting != 1 || b.Deferred != 2 {
+		t.Fatalf("live: %+v", b)
+	}
+	solo := b.Slots[2]
+	if !solo.Solo || solo.State != "gen" || solo.NDecoded != 1200 || solo.TPS == nil || *solo.TPS != 78.4 || solo.NCtx != 262144 {
+		t.Fatalf("solo row: %+v", solo)
+	}
+	if s := b.Slots[1]; s.State != "prompt" || s.PromptRead != 10000 || s.PromptTotal != 40000 {
+		t.Fatalf("reading slot: %+v", s)
+	}
+	if *b.GenLiveTPS != 78.4 || b.PromptTotal != 2841 || b.GenAvgTPS != 77.4 || b.PromptAvgTPS != 395.9 {
+		t.Fatalf("totals: live=%v prompt=%v gen_avg=%v prompt_avg=%v", *b.GenLiveTPS, b.PromptTotal, b.GenAvgTPS, b.PromptAvgTPS)
+	}
+	l := b.last
+	if l == nil || l.PromptN != 68 || l.CachedN != 2768 || l.GenN != 4640 || l.GenTPS != 78 || l.DraftRate == nil || l.PromptTPS != 89.2 {
+		t.Fatalf("last: %+v", l)
+	}
+	// llama-server Prometheus — не Strata
+	if applyStrata(&backendStats{}, []byte("llamacpp:requests_processing 1\n")) {
+		t.Fatal("prometheus text detected as strata")
+	}
+}
